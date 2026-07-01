@@ -352,6 +352,31 @@ def make_piecewise_edges(e0, g):
     return edges
 
 
+def coarsen_edges_to_min_step(edges: np.ndarray, min_step: float) -> np.ndarray:
+    """Merge adjacent bin edges that are closer than min_step.
+
+    Keeps the first edge and removes intermediate edges until we have a gap >= min_step.
+    This prevents over-resolved bins that produce zig-zag artifacts.
+    """
+    if len(edges) <= 2:
+        return edges
+
+    out = [edges[0]]
+    i = 1
+    while i < len(edges):
+        # Extend from last kept edge until we exceed min_step.
+        lo = float(out[-1])
+        hi = float(edges[i])
+        if (hi - lo) >= min_step:
+            out.append(edges[i])
+            i += 1
+        else:
+            # Skip this edge; it's too close to last kept.
+            i += 1
+
+    return np.array(out)
+
+
 # -------------------------
 # Binning
 # -------------------------
@@ -629,26 +654,57 @@ def main():
         for s in use:
             align_scan_energy(s, e0_target)
 
-    # Minimum raw energy step across usable scans (ignore degenerate duplicate steps).
+    # Estimate effective raw energy step across usable scans.
+    # Use a low percentile (e.g., 5%) to be robust against tiny outlier steps.
     eps_de = 1e-6
     all_raw_de: list[float] = []
     for s in use:
         dE = np.diff(s.energy_eV)
         valid = dE[dE > eps_de]
         if len(valid) > 0:
-            all_raw_de.append(float(np.min(valid)))
+            all_raw_de.extend(np.sort(valid).tolist())
 
-    min_raw_de = float(min(all_raw_de)) if all_raw_de else None
+    # Use a robust effective step instead of absolute minimum.
+    eff_de = float(np.percentile(all_raw_de, 5.0)) if all_raw_de else None
 
-    edges = make_piecewise_edges(e0_target, settings["grid"])
+    g = settings["grid"]
+    too_fine_params: list[str] = []
+    for label, val in [
+        ("de_pre", g["de_pre"]),
+        ("de_xanes", g["de_xanes"]),
+    ]:
+        if eff_de is not None and val < eff_de * 0.95:
+            too_fine_params.append(f"{label}={val}")
 
-    # Warn if any bin is finer than the minimum raw step.
+    # Build initial bin edges.
+    edges = make_piecewise_edges(e0_target, g)
+
+    # Coarsen bins that are finer than what the raw data can support.
+    # This both prevents over-resolution warnings and avoids zig-zag artifacts.
+    coarsened = False
+    if eff_de is not None and eff_de > 0:
+        edges_before = len(edges)
+        edges = coarsen_edges_to_min_step(edges, eff_de)
+        coarsened = (len(edges) < edges_before)
+
+    # After coarsening, check whether any bins are still finer than allowed.
     bin_widths = np.diff(edges)
     too_fine_mask: np.ndarray | bool = False
-    if min_raw_de is not None and min_raw_de > 0:
-        too_fine_mask = bin_widths < min_raw_de
+    if eff_de is not None and eff_de > 0:
+        too_fine_mask = bin_widths < (eff_de * 0.95)
 
-    if isinstance(too_fine_mask, np.ndarray) and np.any(too_fine_mask):
+    any_too_fine = isinstance(too_fine_mask, np.ndarray) and np.any(too_fine_mask)
+
+    # Notify user about auto-coarsening if it occurred or some bins are still too fine.
+    if coarsened or any_too_fine:
+        print("\nNOTE: Automatic energy-grid coarsening applied:")
+        if too_fine_params:
+            print(f"  - Specified bin sizes finer than data resolution: {', '.join(too_fine_params)}")
+        else:
+            print("  - Some requested bins were finer than the effective raw dE step.")
+        print(f"  - Grid was coarsened so no bin is smaller than ~{eff_de:.4f} eV.")
+
+    if any_too_fine:
         regions: list[tuple[float, float]] = []
         i = int(np.nonzero(too_fine_mask)[0][0])
         while i < len(bin_widths):
@@ -661,10 +717,10 @@ def main():
             regions.append((float(edges[i]), float(edges[j])))
             i = j
 
-        print("\nWARNING: Some bins are finer than the minimum raw dE step.")
+        print("\nWARNING: Some bins are finer than the effective raw dE step.")
         for (e0, e1) in regions:
             print(f"  Over-resolved region from {e0:.3f} to {e1:.3f} eV "
-                  f"(bin < {min_raw_de:.4f} eV).")
+                  f"(bin < {eff_de:.4f} eV).")
 
     E, MU, SIG, N, _ = average_binned(
         use, edges, smooth_unc=settings["smooth_uncertainty"]
@@ -682,10 +738,10 @@ def main():
     print(f"Used scans: {len(use)} / {len(scans)}")
     print(f"Output points: {len(out_df)}")
 
-    if min_raw_de is not None and min_raw_de > 0:
-        print(f"Min raw dE step across scans: {min_raw_de:.5f} eV")
+    if eff_de is not None and eff_de > 0:
+        print(f"Effective raw dE step across scans: {eff_de:.5f} eV")
     else:
-        print("Min raw dE step across scans: could not be determined (no usable steps).")
+        print("Effective raw dE step across scans: could not be determined (no usable steps).")
 
     if settings["plot"]["enabled"]:
         g = settings["grid"]
