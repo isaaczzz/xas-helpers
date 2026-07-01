@@ -352,8 +352,17 @@ def make_piecewise_edges(e0, g):
     return edges
 
 
-def coarsen_edges_to_min_step(edges: np.ndarray, min_step: float) -> np.ndarray:
+def coarsen_edges_to_min_step(
+    edges: np.ndarray,
+    min_step: float | np.ndarray,
+) -> np.ndarray:
     """Merge adjacent bin edges that are closer than min_step.
+
+    Parameters
+    ----------
+    edges : 1D array of proposed bin edges (sorted).
+    min_step : float or 1D array aligned with output indices; if array, its values
+               can depend on position/energy to allow adaptive coarsening.
 
     Keeps the first edge and removes intermediate edges until we have a gap >= min_step.
     This prevents over-resolved bins that produce zig-zag artifacts.
@@ -367,7 +376,13 @@ def coarsen_edges_to_min_step(edges: np.ndarray, min_step: float) -> np.ndarray:
         # Extend from last kept edge until we exceed min_step.
         lo = float(out[-1])
         hi = float(edges[i])
-        if (hi - lo) >= min_step:
+
+        if isinstance(min_step, np.ndarray):
+            required = float(min_step[len(out)])
+        else:
+            required = float(min_step)
+
+        if (hi - lo) >= required:
             out.append(edges[i])
             i += 1
         else:
@@ -680,12 +695,27 @@ def main():
     edges = make_piecewise_edges(e0_target, g)
 
     # Coarsen bins that are finer than what the raw data can support.
-    # This both prevents over-resolution warnings and avoids zig-zag artifacts.
-    coarsened = False
+    # Use a single effective dE floor across all regions (pre-edge, XANES, EXAFS).
+    coarsened_regions: list[str] = []  # track which regions were affected.
     if eff_de is not None and eff_de > 0:
         edges_before = len(edges)
+
+        # Global pass: ensure no bin smaller than effective step anywhere.
         edges = coarsen_edges_to_min_step(edges, eff_de)
-        coarsened = (len(edges) < edges_before)
+
+        coarsened_global = (len(edges) < edges_before)
+
+        if coarsened_global:
+            # Identify which regions were affected based on requested steps.
+            too_fine_pre = g["de_pre"] and g["de_pre"] < eff_de * 0.95
+            too_fine_xanes = g["de_xanes"] and g["de_xanes"] < eff_de * 0.95
+
+            if too_fine_pre:
+                coarsened_regions.append("pre-edge")
+            if too_fine_xanes:
+                coarsened_regions.append("XANES")
+            # EXAFS is also subject to the same effective dE floor.
+            coarsened_regions.append("EXAFS (low-k oversampling control)")
 
     # After coarsening, check whether any bins are still finer than allowed.
     bin_widths = np.diff(edges)
@@ -696,12 +726,18 @@ def main():
     any_too_fine = isinstance(too_fine_mask, np.ndarray) and np.any(too_fine_mask)
 
     # Notify user about auto-coarsening if it occurred or some bins are still too fine.
-    if coarsened or any_too_fine:
+    coarsened_or_warned = bool(coarsened_regions) or any_too_fine
+
+    if coarsened_or_warned:
         print("\nNOTE: Automatic energy-grid coarsening applied:")
         if too_fine_params:
             print(f"  - Specified bin sizes finer than data resolution: {', '.join(too_fine_params)}")
         else:
             print("  - Some requested bins were finer than the effective raw dE step.")
+
+        if coarsened_regions:
+            for r in coarsened_regions:
+                print(f"  - Coarsened in: {r}")
         print(f"  - Grid was coarsened so no bin is smaller than ~{eff_de:.4f} eV.")
 
     if any_too_fine:
