@@ -571,7 +571,7 @@ def plot_average(E, MU, SIG, save_prefix=None, regions=None, coarsened_intervals
                 fontsize=7,
                 color="tab:red",
                 ha="left",
-                va="top"
+                va="bottom"
             )
 
         # Adjust ylim to include the indicator.
