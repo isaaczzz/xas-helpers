@@ -330,7 +330,17 @@ def gaussian_smooth(y: np.ndarray, x: np.ndarray, sigma_x: float) -> np.ndarray:
 def estimate_e0_coarse(energy: np.ndarray, mu: np.ndarray,
                        search_min: float | None = None,
                        search_max: float | None = None) -> float:
-    """Locate E0 as peak of Gaussian-smoothed dmu/dE, excluding scan edges."""
+    """Locate E0 as the first significant inflection point of Gaussian-smoothed dmu/dE.
+
+    Sigma is calibrated to the fine step size inside the search window (5th-percentile
+    of step differences × 5), not the total scan span.  Span-proportional sigma
+    over-smooths wide scans and displaces the apparent E0 to a steeper feature several
+    eV above the conventional first-inflection-point value reported by Athena/xraylarch.
+
+    Selection uses a normalized-derivative threshold (xraylarch convention): the first
+    local maximum of dmu/dE that exceeds 60 % of the normalized peak (with adaptive
+    fallback to 30 % and 15 % if fewer than one candidate is found).
+    """
     n = len(energy)
 
     if n < 50:
@@ -340,10 +350,6 @@ def estimate_e0_coarse(energy: np.ndarray, mu: np.ndarray,
 
     e_min, e_max = float(energy[0]), float(energy[-1])
     span = e_max - e_min
-    sigma_x = max(span * 0.005, 0.3)
-
-    mu_s = gaussian_smooth(mu, energy, sigma_x=sigma_x)
-    dmu = np.gradient(np.asarray(mu_s), np.asarray(energy))
 
     if search_min is None:
         search_min = e_min + 0.15 * span
@@ -356,8 +362,32 @@ def estimate_e0_coarse(energy: np.ndarray, mu: np.ndarray,
         mask = np.zeros(n, dtype=bool)
         mask[lo:hi] = True
 
-    pos_idx = int(np.where(mask)[0][int(np.argmax(dmu[mask]))])
-    return float(energy[pos_idx])
+    energy_win = energy[mask]
+    diffs_win = np.diff(energy_win)
+    diffs_win = diffs_win[diffs_win > 1e-6]
+    fine_step = float(np.percentile(diffs_win, 5)) if diffs_win.size > 0 else span / n
+    sigma_x = max(fine_step * 5, 0.3)
+
+    mu_s = gaussian_smooth(mu, energy, sigma_x=sigma_x)
+    dmu = np.gradient(np.asarray(mu_s), np.asarray(energy))
+
+    dmu_win = dmu[mask]
+    dm_min = dmu_win.min()
+    dm_ptp = max(1e-10, dmu_win.max() - dm_min)
+    dmu_norm = (dmu_win - dm_min) / dm_ptp
+
+    # Find the first local maximum exceeding the threshold (xraylarch-style).
+    # Halve the threshold up to twice if no qualifying candidate is found.
+    threshold = 0.60
+    for _ in range(3):
+        for i in range(1, len(dmu_norm) - 1):
+            if (dmu_norm[i] > threshold and
+                    dmu_norm[i] >= dmu_norm[i - 1] and
+                    dmu_norm[i] >= dmu_norm[i + 1]):
+                return float(energy_win[i])
+        threshold *= 0.5
+
+    return float(energy_win[np.argmax(dmu_win)])  # fallback: global max
 
 
 def refine_e0_local(energy: np.ndarray, mu: np.ndarray, E0_coarse: float,
