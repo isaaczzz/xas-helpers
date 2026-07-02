@@ -1,0 +1,8 @@
+# Core dependencies (required by most/all XAS helper scripts)
+numpy
+pandas
+scipy
+matplotlib
+
+# Optional dependencies (for specific features, e.g., YAML config support)
+pyyaml
