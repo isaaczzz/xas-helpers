@@ -547,7 +547,7 @@ def plot_qc(scans, used_scans, save_prefix=None):
     ax.grid(alpha=0.2)
     fig.tight_layout()
     if save_prefix:
-        fig.savefig(f"{save_prefix}_qc_overlay.png", dpi=150)
+        fig.savefig(f"{save_prefix}_qc_overlay.svg")
 
     fig2, ax2 = plt.subplots(figsize=(7, 4))
     e0s = np.array([s.e0 for s in scans])
@@ -558,7 +558,7 @@ def plot_qc(scans, used_scans, save_prefix=None):
     ax2.grid(alpha=0.2)
     fig2.tight_layout()
     if save_prefix:
-        fig2.savefig(f"{save_prefix}_e0_hist.png", dpi=150)
+        fig2.savefig(f"{save_prefix}_e0_hist.svg")
 
     return [fig, fig2]
 
@@ -613,7 +613,7 @@ def plot_average(E, MU, SIG, all_mu=None, save_prefix=None, regions=None, coarse
 
     fig.tight_layout()
     if save_prefix:
-        fig.savefig(f"{save_prefix}_average.png", dpi=150)
+        fig.savefig(f"{save_prefix}_average.svg")
     return fig
 
 
