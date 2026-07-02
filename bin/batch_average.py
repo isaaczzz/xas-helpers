@@ -110,7 +110,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 BIN_AVERAGE = SCRIPT_DIR / "bin_average.py"
 
 # Keys treated as job metadata (not config overrides)
-_JOB_META = {"name", "files", "dir", "config", "file-prefix", "file-suffix", "output"}
+_JOB_META = {"name", "files", "dir", "config", "file-prefix", "file-suffix", "output", "output-dir"}
 
 
 def _validate_files_list(files: Any, where: str) -> list[str]:
@@ -201,6 +201,12 @@ def load_batch(filepath: str) -> list[dict]:
         elif "config" in defaults:
             entry["config"] = defaults["config"]
 
+        # output-dir: can be set in defaults or overridden per job; default to CWD
+        if "output-dir" in job:
+            entry["output-dir"] = job["output-dir"]
+        elif "output-dir" in defaults:
+            entry["output-dir"] = defaults["output-dir"]
+
         # Output is job-level only
         if "output" in job:
             entry["output"] = job["output"]
@@ -235,7 +241,9 @@ def build_cli_args(job: dict) -> tuple[list[str], Path | None, bool]:
     if merged_cfg:
         args.extend(["--config", str(merged_cfg)])
 
-    output = job.get("output", f"{job['name']}.dat")
+    out_dir = Path(job.get("output-dir") or ".")
+    base_output = job.get("output", f"{job['name']}.dat")
+    output = out_dir / base_output
     args.extend(["--output", str(output)])
 
     # Always provide non-interactive plotting args.
