@@ -716,8 +716,8 @@ def main():
 
     # filter
     use = [s for s in scans if ("TRUNCATED_RANGE" not in s.flags and "LOW_SIGNAL_SHUTTER_OR_GAIN" not in s.flags)]
-    if len(use) < 2:
-        raise RuntimeError("Not enough usable scans after QC filtering.")
+    if len(use) < 1:
+        raise RuntimeError("No usable scans after QC filtering.")
 
     # alignment target
     align_mode = settings["align"]
@@ -890,8 +890,10 @@ def main():
         for e0, e1 in regions_warn:
             print(f"  Over-resolved region from {e0:.3f} to {e1:.3f} eV (bin < {eff_de:.4f} eV).")
 
-    # averaging modes
-    if args.rebin_scans:
+    # averaging modes (for a single scan, always use pooling path)
+    single_scan = len(use) == 1
+
+    if args.rebin_scans and not single_scan:
         E, MU, SIG, N, all_mu = average_binned(use, edges, smooth_unc=settings["smooth_uncertainty"])
         n_label = "n_contrib_scans"
     else:
@@ -899,8 +901,12 @@ def main():
         pool_mu = np.concatenate([s.mu for s in use])
         E, MU, SIG, n_pts = bin_scan_to_edges(pool_e, pool_mu, edges)
 
-        # keep bins with >=2 pooled points so sigma is defined robustly
-        keep = n_pts >= 2
+        # For a single scan: allow bins with >=1 point.
+        # For multiple scans (pooling): require >=2 points per bin.
+        if single_scan:
+            keep = n_pts >= 1
+        else:
+            keep = n_pts >= 2
         E, MU, SIG, n_pts = E[keep], MU[keep], SIG[keep], n_pts[keep]
 
         if settings["smooth_uncertainty"]:
@@ -910,7 +916,10 @@ def main():
         all_mu = None
         n_label = "n_contrib_points"
 
-        print(f"\nPooled {len(pool_e)} raw points from {len(use)} scans into {len(E)} bins.")
+        if single_scan:
+            print(f"\nSingle scan: rebinned {len(pool_e)} raw points into {len(E)} bins.")
+        else:
+            print(f"\nPooled {len(pool_e)} raw points from {len(use)} scans into {len(E)} bins.")
 
     out = settings["output"]
     out_df = pd.DataFrame({
@@ -926,9 +935,10 @@ def main():
     print(f"Output points: {len(out_df)}")
 
     if eff_de is not None and eff_de > 0:
-        print(f"Effective raw dE step across scans: {eff_de:.5f} eV")
+        prefix = "scan" if single_scan else "scans"
+        print(f"Effective raw dE step across {prefix}: {eff_de:.5f} eV")
     else:
-        print("Effective raw dE step across scans: could not be determined (no usable steps).")
+        print("Effective raw dE step: could not be determined (no usable steps).")
 
     if settings["plot"]["enabled"]:
         e_ex1 = e0_grid + K_CONV_EV_PER_A2 * g["kmax"]**2
