@@ -488,8 +488,8 @@ def plot_qc(scans, used_scans, save_prefix=None):
     return [fig, fig2]
 
 
-def plot_average(E, MU, SIG, save_prefix=None, regions=None):
-    """Plot averaged XAS spectrum with optional region shading.
+def plot_average(E, MU, SIG, save_prefix=None, regions=None, coarsened_intervals=None):
+    """Plot averaged XAS spectrum with optional region shading and coarsening indicators.
 
     Parameters
     ----------
@@ -501,6 +501,7 @@ def plot_average(E, MU, SIG, save_prefix=None, regions=None):
              Example: {"Pre-edge": (-200+E0, -30+E0),
                         "XANES":    (-30+E0, 50+E0),
                         "EXAFS":    (50+E0, E_max)}
+    coarsened_intervals: optional list of (lo, hi) where bins were auto-coarsened.
     """
     fig, ax = plt.subplots(figsize=(10, 5))
 
@@ -542,7 +543,40 @@ def plot_average(E, MU, SIG, save_prefix=None, regions=None):
     ax.set_ylabel("Raw absorbance (mu)")
     ax.set_title("Binned/averaged XAS spectrum")
     ax.grid(alpha=0.2)
-    ax.legend()
+    leg = ax.legend()
+
+    # Add a subtle indicator at the bottom for coarsened regions.
+    if isinstance(coarsened_intervals, list):
+        ymin, ymax = ax.get_ylim()
+        y_range = ymax - ymin
+        y_base = ymin - 0.03 * y_range
+        bar_height = 0.015 * y_range
+
+        for (lo, hi) in coarsened_intervals:
+            rect = plt.Rectangle(
+                (lo, y_base),
+                hi - lo,
+                bar_height,
+                color="tab:red",
+                alpha=0.9,
+                zorder=10
+            )
+            ax.add_patch(rect)
+
+        # Add label once for the indicator.
+        if coarsened_intervals:
+            ax.annotate(
+                "Auto-coarsened region(s)",
+                xy=(coarsened_intervals[0][0], y_base + bar_height),
+                fontsize=7,
+                color="tab:red",
+                ha="left",
+                va="top"
+            )
+
+        # Adjust ylim to include the indicator.
+        ax.set_ylim(bottom=ymin - 0.05 * y_range)
+
     fig.tight_layout()
     if save_prefix:
         fig.savefig(f"{save_prefix}_average.png", dpi=150)
@@ -586,6 +620,14 @@ def main():
     ap.add_argument("--de-xanes", type=float, default=None)
     ap.add_argument("--kmax", type=float, default=None)
     ap.add_argument("--dk", type=float, default=None)
+
+    # Coarsening overrides (allow finer bins in specific regions; still warn).
+    ap.add_argument("--no-coarse-pre-edge", action="store_true",
+                    help="Do not auto-coarsen pre-edge region")
+    ap.add_argument("--no-coarse-xanes",    action="store_true",
+                    help="Do not auto-coarsen XANES region")
+    ap.add_argument("--no-coarse-exafs",    action="store_true",
+                    help="Do not auto-coarsen EXAFS region")
 
     ap.add_argument("--output", default=None)
 
@@ -694,28 +736,73 @@ def main():
     # Build initial bin edges.
     edges = make_piecewise_edges(e0_target, g)
 
-    # Coarsen bins that are finer than what the raw data can support.
-    # Use a single effective dE floor across all regions (pre-edge, XANES, EXAFS).
-    coarsened_regions: list[str] = []  # track which regions were affected.
+    # Define region boundaries (for logic and reporting).
+    pre_lo  = e0_target + g["pre_start"]
+    pre_hi  = e0_target + g["pre_end"]
+    xanes_lo = pre_hi
+    xanes_hi = e0_target + g["xanes_end"]
+
+    # Coarsening override flags from CLI.
+    coarse_pre  = not args.no_coarse_pre_edge
+    coarse_xanes = not args.no_coarse_xanes
+    coarse_exafs = not args.no_coarse_exafs
+
+    coarsened_regions: list[str] = []      # which regions were affected
+    coarsened_intervals: list[tuple[float, float]] = []  # intervals actually coarsened (for plot)
+
     if eff_de is not None and eff_de > 0:
-        edges_before = len(edges)
+        edges_before_list = list(edges)
 
-        # Global pass: ensure no bin smaller than effective step anywhere.
-        edges = coarsen_edges_to_min_step(edges, eff_de)
+        def region_of(e):
+            if e <= pre_hi:
+                return "pre-edge"
+            elif e <= xanes_hi:
+                return "xanes"
+            else:
+                return "exafs"
 
-        coarsened_global = (len(edges) < edges_before)
+        # Apply coarsening per region based on flags.
+        edges_out = [edges[0]]
+        i = 1
+        while i < len(edges):
+            lo = float(edges_out[-1])
+            hi = float(edges[i])
 
-        if coarsened_global:
-            # Identify which regions were affected based on requested steps.
-            too_fine_pre = g["de_pre"] and g["de_pre"] < eff_de * 0.95
+            region = region_of(lo)
+
+            coarse_ok = (region == "pre-edge" and coarse_pre) or \
+                        (region == "xanes"    and coarse_xanes) or \
+                        (region == "exafs"    and coarse_exafs)
+
+            if coarse_ok and (hi - lo) < eff_de:
+                # Skip this edge; let it merge into the previous bin.
+                i += 1
+            else:
+                edges_out.append(edges[i])
+                i += 1
+
+        edges = np.array(edges_out)
+
+        # Identify intervals that were actually coarsened (where we removed points).
+        if len(edges_before_list) > len(edges):
+            # A region is considered "coarsened" only if:
+            # - Coarsening was allowed there (via coarse_*), AND
+            # - Its requested step is finer than the effective raw dE.
+            too_fine_pre  = g["de_pre"] and g["de_pre"] < eff_de * 0.95
             too_fine_xanes = g["de_xanes"] and g["de_xanes"] < eff_de * 0.95
 
-            if too_fine_pre:
+            if coarse_pre and too_fine_pre:
                 coarsened_regions.append("pre-edge")
-            if too_fine_xanes:
+                coarsened_intervals.append((float(pre_lo), float(pre_hi)))
+            if coarse_xanes and too_fine_xanes:
                 coarsened_regions.append("XANES")
+                coarsened_intervals.append((float(xanes_lo), float(xanes_hi)))
+
             # EXAFS is also subject to the same effective dE floor.
-            coarsened_regions.append("EXAFS (low-k oversampling control)")
+            e_ex1 = e0_target + K_CONV_EV_PER_A2 * g["kmax"]**2
+            if coarse_exafs:
+                coarsened_regions.append("EXAFS (low-k oversampling control)")
+                coarsened_intervals.append((float(xanes_hi), float(e_ex1)))
 
     # After coarsening, check whether any bins are still finer than allowed.
     bin_widths = np.diff(edges)
@@ -740,6 +827,7 @@ def main():
                 print(f"  - Coarsened in: {r}")
         print(f"  - Grid was coarsened so no bin is smaller than ~{eff_de:.4f} eV.")
 
+    # Always warn about regions that are oversampled even if coarse was disabled.
     if any_too_fine:
         regions: list[tuple[float, float]] = []
         i = int(np.nonzero(too_fine_mask)[0][0])
@@ -797,7 +885,8 @@ def main():
         figs.append(plot_average(
             E, MU, SIG,
             save_prefix=settings["plot"]["save_prefix"],
-            regions=regions
+            regions=regions,
+            coarsened_intervals=coarsened_intervals
         ))
         if settings["plot"]["show"]:
             plt.show()
