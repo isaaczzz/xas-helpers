@@ -246,8 +246,10 @@ def build_cli_args(job: dict) -> tuple[list[str], Path | None, bool]:
     output = out_dir / base_output
     args.extend(["--output", str(output)])
 
-    # Always provide non-interactive plotting args.
-    args.extend(["--no-show", "--plot-prefix", str(job["name"])])
+    # Always provide non-interactive plotting args;
+    # include output-dir so figures land with the .dat file.
+    plot_prefix = out_dir / job["name"]
+    args.extend(["--no-show", "--plot-prefix", str(plot_prefix)])
 
     args.extend([str(x) for x in job["files"]])
 

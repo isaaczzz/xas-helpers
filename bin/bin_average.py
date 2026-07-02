@@ -26,6 +26,15 @@ from scipy.signal import savgol_filter
 from scipy.ndimage import median_filter
 import matplotlib.pyplot as plt
 
+def _ensure_parent(path: str | Path | None):
+    """Ensure parent directory of path exists (if it's a real file path)."""
+    if not path or "/" not in str(path) and "\\" not in str(path):
+        return  # no directory component; assume current dir is fine
+    p = Path(str(path))
+    if p.parent and str(p.parent) != ".":
+        p.parent.mkdir(parents=True, exist_ok=True)
+
+
 # Optional YAML support
 try:
     import yaml
@@ -547,7 +556,9 @@ def plot_qc(scans, used_scans, save_prefix=None):
     ax.grid(alpha=0.2)
     fig.tight_layout()
     if save_prefix:
-        fig.savefig(f"{save_prefix}_qc_overlay.svg")
+        out_path = f"{save_prefix}_qc_overlay.svg"
+        _ensure_parent(out_path)
+        fig.savefig(out_path)
 
     fig2, ax2 = plt.subplots(figsize=(7, 4))
     e0s = np.array([s.e0 for s in scans])
@@ -558,7 +569,9 @@ def plot_qc(scans, used_scans, save_prefix=None):
     ax2.grid(alpha=0.2)
     fig2.tight_layout()
     if save_prefix:
-        fig2.savefig(f"{save_prefix}_e0_hist.svg")
+        out_path = f"{save_prefix}_e0_hist.svg"
+        _ensure_parent(out_path)
+        fig2.savefig(out_path)
 
     return [fig, fig2]
 
@@ -613,7 +626,9 @@ def plot_average(E, MU, SIG, all_mu=None, save_prefix=None, regions=None, coarse
 
     fig.tight_layout()
     if save_prefix:
-        fig.savefig(f"{save_prefix}_average.svg")
+        out_path = f"{save_prefix}_average.svg"
+        _ensure_parent(out_path)
+        fig.savefig(out_path)
     return fig
 
 
@@ -928,6 +943,8 @@ def main():
         "sigma_mu": SIG,
         n_label: N
     })
+
+    _ensure_parent(out)
     out_df.to_csv(out, sep="\t", index=False, float_format="%.8g")
 
     print(f"\nSaved: {out}")
