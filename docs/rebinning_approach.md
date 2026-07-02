@@ -230,6 +230,15 @@ Why this matters:
 - Regions where many scans agree will have small error bars; regions with disagreement or fewer contributing scans will show larger uncertainty instead of looking artificially clean.
 - The N_eff column lets you see at a glance which energy ranges had full coverage and which were only partially sampled.
 
+### Alternative: direct pooling (`--pool-points`)
+
+When repeated scans agree well qualitatively, the per-scan rebinning step can be skipped entirely. With `--pool-points`, all raw (E, μ) data points from every usable scan are concatenated into a single array and binned onto the output grid in one pass. This has two advantages:
+
+- **Better statistics for fine bins**: In regions like XANES where individual scans may only contribute 1–2 points per bin, pooling dozens of scans ensures each bin contains many measurements and produces reliable uncertainty estimates without fallback weighting.
+- **Simpler uncertainty**: σ is computed directly from the standard error of the mean within each pooled bin — no weighted averaging or cross-scan scatter calculation needed.
+
+The minimum effective step-size guardrail still applies, so bins are never unrealistically narrow. Use this mode when scans are well-aligned and consistent; use the default per-scan approach when you need outlier resistance (inverse-variance weighting naturally down-weights noisy individual scans).
+
 ## Short summary (what problems this solves)
 
 This rebinning approach — seven stages from raw file to averaged spectrum — is designed to:
@@ -240,4 +249,5 @@ This rebinning approach — seven stages from raw file to averaged spectrum — 
 - Avoid false precision by refusing to create bins finer than what your data can justify (§5).
 - Map raw points into bins honestly, so output values reflect actual measurements not interpolation (§6).
 - Weight each scan's contribution by its measurement precision (inverse-variance), so noisy scans contribute less without manual exclusion (§7).
+- Optionally pool all raw points across scans before binning for better statistics in fine-binned regions (§7).
 - Produce realistic error bars showing where the average is well-constrained vs uncertain, and drop bins that only have a single contributing scan (§7).

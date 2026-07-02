@@ -716,6 +716,10 @@ def main():
     ap.add_argument("--no-coarse-exafs",    action="store_true",
                     help="Do not auto-coarsen EXAFS region")
 
+    ap.add_argument("--pool-points", action="store_true",
+                    help="Pool all raw data points across scans before binning "
+                         "(skips per-scan rebinning; better statistics for fine bins)")
+
     ap.add_argument("--output", default=None)
 
     # plotting
@@ -977,9 +981,29 @@ def main():
             print(f"  Over-resolved region from {e0:.3f} to {e1:.3f} eV "
                   f"(bin < {eff_de:.4f} eV).")
 
-    E, MU, SIG, N, all_mu = average_binned(
-        use, edges, smooth_unc=settings["smooth_uncertainty"]
-    )
+    if args.pool_points:
+        # Pool all raw data points across scans into a single array, then bin once.
+        # This gives much better statistics for fine-binned regions (e.g., XANES)
+        # where individual scans may only have 1-2 points per bin.
+        pool_e = np.concatenate([s.energy_eV for s in use])
+        pool_mu = np.concatenate([s.mu for s in use])
+        E, MU, SIG = bin_scan_to_edges(pool_e, pool_mu, edges)
+
+        # Filter out bins with no data.
+        keep = np.isfinite(MU)
+        E, MU, SIG = E[keep], MU[keep], SIG[keep]
+
+        if settings["smooth_uncertainty"]:
+            SIG = smooth_sigma(SIG, win=11)
+
+        N = np.full(len(E), len(use))  # all scans contributed to the pool
+        all_mu = None  # no per-scan data for overlay
+
+        print(f"\nPooled {len(pool_e)} raw points from {len(use)} scans into {len(E)} bins.")
+    else:
+        E, MU, SIG, N, all_mu = average_binned(
+            use, edges, smooth_unc=settings["smooth_uncertainty"]
+        )
 
     out = settings["output"]
     out_df = pd.DataFrame({
