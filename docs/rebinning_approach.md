@@ -195,9 +195,14 @@ For bins using inverse-variance weighting:
 1. Compute weights: **w[i] = 1 / σ²[i,j]**.
 2. Weighted mean absorbance: **μ_avg[j] = Σ(w·μ) / Σw**.
 3. Weighted representative energy: **E_avg[j] = Σ(w·b_e) / Σw** (ensures the reported E is consistent with the weighted μ).
-4. Weighted standard error: **σ_mean[j] = 1 / √Σw** — how well-constrained this point is from all contributing scans combined.
+4. Combined uncertainty from two sources added in quadrature:
+   - **Propagated internal precision**: σ_prop = 1/√Σw — how well each scan measured its own bin, combined across scans.
+   - **Cross-scan scatter**: σ_scatter = √(χ² / ((N-1)·Σw)) where χ² is the weighted sum of squared residuals from the mean. This captures whether scans actually agree with each other beyond their individual uncertainties.
+   - Final: **σ_mean[j] = √(σ_prop² + σ_scatter²)**.
 
-This means a noisy scan in a particular region naturally contributes less to the final average, without requiring manual exclusion of entire files. Fine-binned regions (like XANES) still produce smooth output even when individual bins contain only one raw point per scan.
+When all scans have no internal uncertainty estimates (equal-weight fallback), σ_mean is simply std/√N, which inherently captures both sources together.
+
+This means a noisy scan in a particular region naturally contributes less to the final average, without requiring manual exclusion of entire files. Fine-binned regions (like XANES) still produce smooth output even when individual bins contain only one raw point per scan. And if scans disagree more than their internal uncertainties would suggest, that disagreement shows up directly in the error bars.
 
 ### Smoothing the uncertainty
 

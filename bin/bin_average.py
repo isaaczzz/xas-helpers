@@ -505,7 +505,19 @@ def average_binned(scans, edges, smooth_unc=True):
             w_sum_j = np.sum(w_known)
             mean_e[j] = np.sum(w_known * e_v) / w_sum_j
             mean_mu[j] = np.sum(w_known * mu_v) / w_sum_j
-            sigma_mean[j] = 1.0 / np.sqrt(w_sum_j)
+
+            # Propagated error from individual scan uncertainties.
+            sigma_prop = 1.0 / np.sqrt(w_sum_j)
+
+            # Cross-scan scatter (weighted standard error of the residuals).
+            if nv > 1:
+                chi2 = np.sum(w_known * (mu_v - mean_mu[j])**2)
+                sigma_scatter = np.sqrt(chi2 / ((nv - 1) * w_sum_j))
+            else:
+                sigma_scatter = 0.0
+
+            # Combine in quadrature so both sources of uncertainty are captured.
+            sigma_mean[j] = np.sqrt(sigma_prop**2 + sigma_scatter**2)
 
     if smooth_unc:
         sigma_mean = smooth_sigma(sigma_mean, win=11)
