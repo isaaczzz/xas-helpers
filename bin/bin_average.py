@@ -488,14 +488,15 @@ def plot_qc(scans, used_scans, save_prefix=None):
     return [fig, fig2]
 
 
-def plot_average(E, MU, SIG, save_prefix=None, regions=None, coarsened_intervals=None):
-    """Plot averaged XAS spectrum with optional region shading and coarsening indicators.
+def plot_average(E, MU, SIG, all_mu=None, save_prefix=None, regions=None, coarsened_intervals=None):
+    """Plot averaged XAS spectrum with optional rebinned-scan overlay, region shading, and coarsening indicators.
 
     Parameters
     ----------
     E : 1D array of energy values.
     MU: corresponding mu (absorbance).
     SIG: uncertainty.
+    all_mu: optional 2D array (n_scans x n_bins) of per-scan binned mu values for overlay.
     save_prefix: prefix for saving PNGs.
     regions: optional dict mapping label -> (lo, hi) energy bounds to shade.
              Example: {"Pre-edge": (-200+E0, -30+E0),
@@ -518,18 +519,26 @@ def plot_average(E, MU, SIG, save_prefix=None, regions=None, coarsened_intervals
             ax.axvspan(lo, hi, facecolor=color, alpha=0.35, zorder=0,
                        label=label)
 
+    # Overlay individual rebinned scans if provided.
+    n_scans = None
+    if all_mu is not None and all_mu.ndim == 2:
+        n_scans = all_mu.shape[0]
+        for i in range(n_scans):
+            valid = np.isfinite(all_mu[i])
+            if np.sum(valid) > 2:
+                ax.plot(E[valid], all_mu[i, valid],
+                        color="tab:gray", alpha=0.35, lw=0.8, zorder=1)
+
     # Plot points as markers to reveal the final grid spacing.
+    label = f"Averaged μ ({n_scans} scans)" if n_scans else "Averaged μ"
     ax.scatter(
         E, MU,
-        color="black",
-        s=8,
-        edgecolor="none",
-        alpha=0.9,
-        label="Averaged μ (points)"
+        color="black", s=8, edgecolor="none", alpha=0.9, zorder=2,
+        label=label
     )
 
-    # Optional: light connecting line to emphasize continuity without hiding grid.
-    ax.plot(E, MU, color="black", lw=0.3, alpha=0.6)
+    # Light connecting line to emphasize continuity without hiding grid.
+    ax.plot(E, MU, color="tab:blue", lw=1.2, alpha=0.7, zorder=2)
 
     # Uncertainty band.
     ax.fill_between(
@@ -541,9 +550,9 @@ def plot_average(E, MU, SIG, save_prefix=None, regions=None, coarsened_intervals
 
     ax.set_xlabel("Energy (eV)")
     ax.set_ylabel("Raw absorbance (mu)")
-    ax.set_title("Binned/averaged XAS spectrum")
+    ax.set_title(f"Binned/averaged XAS spectrum ({len(E)} points)")
     ax.grid(alpha=0.2)
-    leg = ax.legend()
+    ax.legend()
 
     # Add a subtle indicator at the bottom for coarsened regions.
     if isinstance(coarsened_intervals, list):
@@ -890,7 +899,7 @@ def main():
             print(f"  Over-resolved region from {e0:.3f} to {e1:.3f} eV "
                   f"(bin < {eff_de:.4f} eV).")
 
-    E, MU, SIG, N, _ = average_binned(
+    E, MU, SIG, N, all_mu = average_binned(
         use, edges, smooth_unc=settings["smooth_uncertainty"]
     )
 
@@ -927,7 +936,7 @@ def main():
         figs = []
         figs.extend(plot_qc(scans, use, save_prefix=settings["plot"]["save_prefix"]))
         figs.append(plot_average(
-            E, MU, SIG,
+            E, MU, SIG, all_mu=all_mu,
             save_prefix=settings["plot"]["save_prefix"],
             regions=regions,
             coarsened_intervals=coarsened_intervals
