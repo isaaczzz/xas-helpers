@@ -34,16 +34,23 @@ At this point each scan is just an (E, μ(E)) array with metadata.
 
 Before combining scans, we estimate the absorption edge position E0 for each one, then use simple statistical checks to flag suspicious files.
 
-- Estimating E0:
-  - Smooth μ(E) using a Savitzky–Golay filter (local polynomial fit).
-  - Compute dμ/dE; define E0 as the energy where this derivative is maximal.
-  - Exclude the outer ~5% of each scan to avoid spurious maxima at edges.
-- Flagging suspicious scans:
-  - TRUNCATED_RANGE: energy span unusually short compared with other scans.
-  - LOW_SIGNAL_SHUTTER_OR_GAIN: overall signal unusually low (e.g., shutter closed, bad gain).
-  - I0_GAIN_OUTLIER: median I0 is far from the group’s typical value.
+### Estimating E0
 
-Scans flagged as clearly bad can be excluded automatically so they don’t distort later averages. This step prevents obviously defective files from silently corrupting results.
+E0 is located using a two-stage pipeline (described in full mathematical detail in [e0_algorithm.md](e0_algorithm.md)):
+
+1. **Coarse estimate**: μ(E) is smoothed by a Gaussian kernel whose width σ is calibrated to five times the 5th-percentile energy step size inside a central search window (excluding the outer 15% of the scan on each side). The derivative dμ̃/dE is computed and normalised to [0, 1] within the window. E0 is defined as the energy of the **first local maximum** exceeding 60% of the normalised range (with adaptive fallback to 30% and 15%). This first-inflection-point convention matches Athena and xraylarch. The Gaussian width is calibrated to the data step size rather than the total scan span to avoid over-smoothing: span-proportional smoothing at typical XAS scan widths (1000–1600 eV) would produce σ ≈ 5–8 eV, merging distinct features near the edge and displacing the apparent E0 upward by several eV.
+
+2. **Local polynomial refinement**: a degree-4 polynomial is fitted by ordinary least squares to the raw (unsmoothed) μ(E) data in a 15 eV window around the coarse estimate ([E0_coarse − 7, E0_coarse + 8] eV). Inflection points of the polynomial are found analytically as zeros of its second derivative. The inflection with the largest first derivative is selected, provided the polynomial fit achieves R² ≥ 0.95 and the refined value is within 3.0 eV of the coarse estimate. This gives sub-step precision (typically better than 0.1 eV) without smoothing or interpolating the data.
+
+### Flagging suspicious scans
+
+Three criteria flag scans for potential exclusion:
+
+- **TRUNCATED_RANGE**: the scan’s energy span is less than 95% of the median span across all scans, indicating the scan may have been cut off.
+- **LOW_SIGNAL_SHUTTER_OR_GAIN**: the median signal is less than 5% of the global median signal, indicating the shutter was likely closed or the gain was grossly misconfigured.
+- **I0_GAIN_OUTLIER**: the median I0 deviates from the group median by more than 4.0 median absolute deviations (scaled by 1.4826 to match the standard deviation of a Gaussian), indicating a gain setting change between scans.
+
+Scans flagged with TRUNCATED_RANGE or LOW_SIGNAL_SHUTTER_OR_GAIN are excluded from all downstream processing. I0_GAIN_OUTLIER is reported but does not currently trigger automatic exclusion, since gain changes can sometimes be accommodated by the normalisation step. This prevents obviously defective files from silently corrupting the average.
 
 ## 3) Energy alignment (correcting small drifts between scans)
 
@@ -261,6 +268,7 @@ With `--rebin-scans`, each scan is first binned onto the shared grid individuall
 This rebinning approach — eight stages from raw file to averaged spectrum — is designed to:
 
 - Correct small energy drifts between scans, so features line up instead of smearing (§3).
+- Locate E0 at the first inflection point of the rising edge, with sub-step precision, using a Gaussian-smoothed derivative followed by local polynomial refinement (§2; see also `e0_algorithm.md`).
 - Automatically detect and exclude clearly bad scans before they distort results (§2).
 - Provide a single, physically motivated energy grid across all scans for direct comparison (§4).
 - Avoid false precision by refusing to create bins finer than what your data can justify (§5).
