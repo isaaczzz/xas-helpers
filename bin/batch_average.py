@@ -91,10 +91,9 @@ def load_batch(filepath: str) -> list[dict]:
         elif "config" in defaults:
             entry["config"] = defaults["config"]
 
-        # Optional overrides
-        for key in ("output", "plot-prefix"):
-            if key in job:
-                entry[key] = job[key]
+    # Optional overrides
+        if "output" in job:
+            entry["output"] = job["output"]
 
         # Boolean flags: pass through if truthy
         for flag, cli_name in [
@@ -150,10 +149,10 @@ def build_cli_args(job: dict) -> list[str]:
     output = job.get("output", f"{job['name']}.dat")
     args.extend(["--output", output])
 
-    # Plotting
-    pp = job.get("plot-prefix")
-    if pp:
-        args.extend(["--plot", "--no-show", "--plot-prefix", str(pp)])
+    # Plotting: always pass --no-show and set plot-prefix to job name.
+    # Whether plotting actually runs is controlled by the config file's
+    # plot.enabled block; this just ensures a save_prefix is available.
+    args.extend(["--no-show", "--plot-prefix", job["name"]])
 
     # Positional files
     args.extend(job["files"])
