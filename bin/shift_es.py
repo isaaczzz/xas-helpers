@@ -244,10 +244,11 @@ def write_spectrum(spectrum: dict, out_path: Path,
     for line in (extra_header or []):
         header_lines.append(line if line.startswith("#") else f"# {line}")
 
-    with out_path.open("w", encoding="utf-8") as fh:
+    with out_path.open("w", encoding="utf-8", newline="\n") as fh:
         for line in header_lines:
             fh.write(line + "\n")
-        fh.write(df.to_csv(sep="\t", index=False, float_format="%.8g"))
+        csv = df.to_csv(sep="\t", index=False, float_format="%.8g").replace("\r\n", "\n").rstrip("\n")
+        fh.write(csv + "\n")
 
 
 # -------------------------
