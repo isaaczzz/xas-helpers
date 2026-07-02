@@ -783,26 +783,70 @@ def main():
 
         edges = np.array(edges_out)
 
-        # Identify intervals that were actually coarsened (where we removed points).
+        # Identify intervals that were actually coarsened by comparing edges_before vs edges_after.
         if len(edges_before_list) > len(edges):
-            # A region is considered "coarsened" only if:
-            # - Coarsening was allowed there (via coarse_*), AND
-            # - Its requested step is finer than the effective raw dE.
-            too_fine_pre  = g["de_pre"] and g["de_pre"] < eff_de * 0.95
-            too_fine_xanes = g["de_xanes"] and g["de_xanes"] < eff_de * 0.95
+            # Build a set of edge values that were removed during coarsening.
+            before_set = set(np.round(edges_before_list, 9))
+            after_set = set(np.round(edges, 9))
+            removed_values = sorted(before_set - after_set)
 
-            if coarse_pre and too_fine_pre:
-                coarsened_regions.append("pre-edge")
-                coarsened_intervals.append((float(pre_lo), float(pre_hi)))
-            if coarse_xanes and too_fine_xanes:
-                coarsened_regions.append("XANES")
-                coarsened_intervals.append((float(xanes_lo), float(xanes_hi)))
+            if removed_values:
+                # Build actual coarsened intervals as contiguous segments that lost points.
+                for i in range(len(edges_before_list)-1):
+                    lo_b = float(edges_before_list[i])
+                    hi_b = float(edges_before_list[i+1])
+                    has_removed = any(lo_b <= rv <= hi_b for rv in removed_values)
+                    if has_removed:
+                        coarsened_intervals.append((lo_b, hi_b))
 
-            # EXAFS is also subject to the same effective dE floor.
-            e_ex1 = e0_target + K_CONV_EV_PER_A2 * g["kmax"]**2
-            if coarse_exafs:
-                coarsened_regions.append("EXAFS (low-k oversampling control)")
-                coarsened_intervals.append((float(xanes_hi), float(e_ex1)))
+                # Merge overlapping intervals.
+                if coarsened_intervals:
+                    merged = [coarsened_intervals[0]]
+                    for (lo, hi) in coarsened_intervals[1:]:
+                        mlo, mhi = merged[-1]
+                        if lo <= mhi + 1e-6:
+                            merged[-1] = (mlo, max(mhi, hi))
+                        else:
+                            merged.append((lo, hi))
+                    coarsened_intervals = merged
+
+                # Decide which regions to report based on how much of each region was affected.
+                def coverage_of(lo, hi):
+                    return float(hi - lo) if hi > lo else 0.0
+
+                pre_len = max(pre_hi - pre_lo, 1e-6)
+                xanes_len = max(xanes_hi - xanes_lo, 1e-6)
+                exafs_lo_val = xanes_hi
+                e_ex1 = e0_target + K_CONV_EV_PER_A2 * g["kmax"]**2
+                exafs_len = max(e_ex1 - exafs_lo_val, 1e-6)
+
+                pre_cov = xanes_cov = exafs_cov = 0.0
+                for (lo, hi) in coarsened_intervals:
+                    # Pre-edge overlap
+                    ov_pre_lo = max(lo, pre_lo)
+                    ov_pre_hi = min(hi, pre_hi)
+                    if ov_pre_lo < ov_pre_hi:
+                        pre_cov += (ov_pre_hi - ov_pre_lo) / pre_len
+
+                    # XANES overlap
+                    ov_x_lo = max(lo, xanes_lo)
+                    ov_x_hi = min(hi, xanes_hi)
+                    if ov_x_lo < ov_x_hi:
+                        xanes_cov += (ov_x_hi - ov_x_lo) / xanes_len
+
+                    # EXAFS overlap
+                    ov_e_lo = max(lo, exafs_lo_val)
+                    ov_e_hi = min(hi, e_ex1)
+                    if ov_e_lo < ov_e_hi:
+                        exafs_cov += (ov_e_hi - ov_e_lo) / exafs_len
+
+                # Only report a region as "coarsened" if it's significantly affected.
+                if pre_cov > 0.25:
+                    coarsened_regions.append("pre-edge")
+                if xanes_cov > 0.10:
+                    coarsened_regions.append("XANES")
+                if exafs_cov > 0.10:
+                    coarsened_regions.append("EXAFS (low-k oversampling control)")
 
     # After coarsening, check whether any bins are still finer than allowed.
     bin_widths = np.diff(edges)
