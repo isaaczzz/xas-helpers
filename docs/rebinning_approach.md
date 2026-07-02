@@ -169,7 +169,20 @@ Raw scans typically have hundreds or thousands of closely spaced points. Many bi
 - Ensures that each output point represents a real chunk of measured data, not an interpolated guess.
 - Means the final grid resolution is determined by bin width and raw sampling density together — you can’t get more information out than what was measured.
 
-## 7) Averaging across scans and estimating uncertainty
+## 7) Baseline correction (`--shift-minima`)
+
+When repeated scans are taken on the same sample at different times, detector baseline offsets can shift the entire μ curve up or down — even when the absorption features themselves align perfectly. These offsets don't affect spectral shape (derivatives, edge jumps), but they distort absolute absorbance values and make averaged spectra harder to interpret.
+
+With `--shift-minima`, each scan's μ axis is shifted so its minimum value becomes zero:
+
+1. For each raw scan, sort all μ values in ascending order.
+2. Take the lowest 5% of data points (robust against noise at any single point).
+3. Define the baseline as the **minimum** μ within that lowest-5% subset.
+4. Subtract this baseline value from every μ data point in the scan.
+
+This is applied to raw data before binning, so both pooling and per-scan rebinning modes benefit. It's disabled by default because it assumes the true minimum absorbance across all scans should be zero — a reasonable approximation for many experimental setups but not universally applicable.
+
+## 8) Averaging across scans and estimating uncertainty
 
 Once every scan has been binned onto the same grid, we have a matrix of shape `(num_scans × num_bins)` where each cell is one scan’s μ value for one bin (or NaN if that scan didn’t cover it). We now average column-wise:
 
@@ -230,24 +243,29 @@ Why this matters:
 - Regions where many scans agree will have small error bars; regions with disagreement or fewer contributing scans will show larger uncertainty instead of looking artificially clean.
 - The N_eff column lets you see at a glance which energy ranges had full coverage and which were only partially sampled.
 
-### Alternative: direct pooling (`--pool-points`)
+### Default: direct pooling
 
-When repeated scans agree well qualitatively, the per-scan rebinning step can be skipped entirely. With `--pool-points`, all raw (E, μ) data points from every usable scan are concatenated into a single array and binned onto the output grid in one pass. This has two advantages:
+By default, all raw (E, μ) data points from every usable scan are concatenated into a single array and binned onto the output grid in one pass. This has two advantages:
 
 - **Better statistics for fine bins**: In regions like XANES where individual scans may only contribute 1–2 points per bin, pooling dozens of scans ensures each bin contains many measurements and produces reliable uncertainty estimates without fallback weighting.
 - **Simpler uncertainty**: σ is computed directly from the standard error of the mean within each pooled bin — no weighted averaging or cross-scan scatter calculation needed.
 
-The minimum effective step-size guardrail still applies, so bins are never unrealistically narrow. Use this mode when scans are well-aligned and consistent; use the default per-scan approach when you need outlier resistance (inverse-variance weighting naturally down-weights noisy individual scans).
+The minimum effective step-size guardrail still applies, so bins are never unrealistically narrow. Use `--rebin-scans` for the per-scan approach when you need outlier resistance (inverse-variance weighting naturally down-weights noisy individual scans).
+
+### Alternative: per-scan rebinning (`--rebin-scans`)
+
+With `--rebin-scans`, each scan is first binned onto the shared grid individually, then the per-scan results are combined using inverse-variance weighted averaging. This is useful when scans may disagree with each other (e.g., varying signal quality) — individual noisy scans get less weight without requiring manual exclusion of entire files.
 
 ## Short summary (what problems this solves)
 
-This rebinning approach — seven stages from raw file to averaged spectrum — is designed to:
+This rebinning approach — eight stages from raw file to averaged spectrum — is designed to:
 
 - Correct small energy drifts between scans, so features line up instead of smearing (§3).
 - Automatically detect and exclude clearly bad scans before they distort results (§2).
 - Provide a single, physically motivated energy grid across all scans for direct comparison (§4).
 - Avoid false precision by refusing to create bins finer than what your data can justify (§5).
 - Map raw points into bins honestly, so output values reflect actual measurements not interpolation (§6).
-- Weight each scan's contribution by its measurement precision (inverse-variance), so noisy scans contribute less without manual exclusion (§7).
-- Optionally pool all raw points across scans before binning for better statistics in fine-binned regions (§7).
-- Produce realistic error bars showing where the average is well-constrained vs uncertain, and drop bins that only have a single contributing scan (§7).
+- Optionally correct baseline offsets between scans so minimum μ is zero (§7).
+- Pool all raw points across scans before binning for better statistics in fine-binned regions (§8).
+- Weight each scan's contribution by its measurement precision (inverse-variance) when using `--rebin-scans` (§8).
+- Produce realistic error bars showing where the average is well-constrained vs uncertain, and drop bins that only have a single contributing scan (§8).

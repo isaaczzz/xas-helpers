@@ -716,9 +716,13 @@ def main():
     ap.add_argument("--no-coarse-exafs",    action="store_true",
                     help="Do not auto-coarsen EXAFS region")
 
-    ap.add_argument("--pool-points", action="store_true",
-                    help="Pool all raw data points across scans before binning "
-                         "(skips per-scan rebinning; better statistics for fine bins)")
+    ap.add_argument("--rebin-scans", action="store_true",
+                    help="Rebin each scan individually before averaging "
+                         "(default: pool all raw points across scans into one binning pass)")
+
+    ap.add_argument("--shift-minima", action="store_true",
+                    help="Shift each scan's μ so its minimum (lowest 5%% of points) is zero, "
+                         "then average; corrects for baseline offsets between scans")
 
     ap.add_argument("--output", default=None)
 
@@ -785,22 +789,35 @@ def main():
     if len(use) < 2:
         raise RuntimeError("Not enough usable scans after QC filtering.")
 
-    # alignment target
+    # alignment target (shifts scan energies)
     align_mode = settings["align"]
     if align_mode == "none":
-        e0_target = np.mean([s.e0 for s in use])
+        e0_align = np.mean([s.e0 for s in use])
     elif align_mode == "mean":
-        e0_target = np.mean([s.e0 for s in use])
+        e0_align = np.mean([s.e0 for s in use])
     elif align_mode == "ref":
-        e0_target = scans[settings["ref_index"]].e0
+        e0_align = scans[settings["ref_index"]].e0
     else:
         if settings["e0_value"] is None:
             raise ValueError("align='value' but e0_value is not set.")
-        e0_target = settings["e0_value"]
+        e0_align = settings["e0_value"]
 
     if align_mode != "none":
         for s in use:
-            align_scan_energy(s, e0_target)
+            align_scan_energy(s, e0_align)
+
+    # E0 for building the output energy grid — --e0-value overrides auto-detection
+    # regardless of alignment mode.
+    e0_grid = settings["e0_value"] if settings["e0_value"] is not None else e0_align
+
+    # Optional baseline correction: shift each scan so its minimum μ is zero.
+    if args.shift_minima:
+        for s in use:
+            n = len(s.mu)
+            threshold_idx = max(1, int(n * 0.05))
+            sorted_vals = np.sort(s.mu)
+            min_mu = np.min(sorted_vals[:threshold_idx])
+            s.mu -= min_mu
 
     # Estimate effective raw energy step across usable scans.
     # Use a low percentile (e.g., 5%) to be robust against tiny outlier steps.
@@ -825,13 +842,13 @@ def main():
             too_fine_params.append(f"{label}={val}")
 
     # Build initial bin edges.
-    edges = make_piecewise_edges(e0_target, g)
+    edges = make_piecewise_edges(e0_grid, g)
 
     # Define region boundaries (for logic and reporting).
-    pre_lo  = e0_target + g["pre_start"]
-    pre_hi  = e0_target + g["pre_end"]
+    pre_lo  = e0_grid + g["pre_start"]
+    pre_hi  = e0_grid + g["pre_end"]
     xanes_lo = pre_hi
-    xanes_hi = e0_target + g["xanes_end"]
+    xanes_hi = e0_grid + g["xanes_end"]
 
     # Coarsening override flags from CLI.
     coarse_pre  = not args.no_coarse_pre_edge
@@ -908,7 +925,7 @@ def main():
                 pre_len = max(pre_hi - pre_lo, 1e-6)
                 xanes_len = max(xanes_hi - xanes_lo, 1e-6)
                 exafs_lo_val = xanes_hi
-                e_ex1 = e0_target + K_CONV_EV_PER_A2 * g["kmax"]**2
+                e_ex1 = e0_grid + K_CONV_EV_PER_A2 * g["kmax"]**2
                 exafs_len = max(e_ex1 - exafs_lo_val, 1e-6)
 
                 pre_cov = xanes_cov = exafs_cov = 0.0
@@ -981,29 +998,29 @@ def main():
             print(f"  Over-resolved region from {e0:.3f} to {e1:.3f} eV "
                   f"(bin < {eff_de:.4f} eV).")
 
-    if args.pool_points:
-        # Pool all raw data points across scans into a single array, then bin once.
-        # This gives much better statistics for fine-binned regions (e.g., XANES)
-        # where individual scans may only have 1-2 points per bin.
+    if args.rebin_scans:
+        # Rebin each scan individually, then average with inverse-variance weighting.
+        E, MU, SIG, N, all_mu = average_binned(
+            use, edges, smooth_unc=settings["smooth_uncertainty"]
+        )
+    else:
+        # Default: pool all raw data points across scans, then bin once.
+        # Better statistics for fine-binned regions (e.g., XANES) where individual
+        # scans may only have 1-2 points per bin.
         pool_e = np.concatenate([s.energy_eV for s in use])
         pool_mu = np.concatenate([s.mu for s in use])
         E, MU, SIG = bin_scan_to_edges(pool_e, pool_mu, edges)
 
-        # Filter out bins with no data.
         keep = np.isfinite(MU)
         E, MU, SIG = E[keep], MU[keep], SIG[keep]
 
         if settings["smooth_uncertainty"]:
             SIG = smooth_sigma(SIG, win=11)
 
-        N = np.full(len(E), len(use))  # all scans contributed to the pool
-        all_mu = None  # no per-scan data for overlay
+        N = np.full(len(E), len(use))
+        all_mu = None
 
         print(f"\nPooled {len(pool_e)} raw points from {len(use)} scans into {len(E)} bins.")
-    else:
-        E, MU, SIG, N, all_mu = average_binned(
-            use, edges, smooth_unc=settings["smooth_uncertainty"]
-        )
 
     out = settings["output"]
     out_df = pd.DataFrame({
@@ -1024,14 +1041,14 @@ def main():
 
     if settings["plot"]["enabled"]:
         g = settings["grid"]
-        e_ex1 = e0_target + K_CONV_EV_PER_A2 * g["kmax"]**2
+        e_ex1 = e0_grid + K_CONV_EV_PER_A2 * g["kmax"]**2
 
         regions = {
-            "Pre-edge": (e0_target + g["pre_start"],
-                         e0_target + g["pre_end"]),
-            "XANES":    (e0_target + g["pre_end"],
-                         e0_target + g["xanes_end"]),
-            "EXAFS":    (e0_target + g["xanes_end"],
+            "Pre-edge": (e0_grid + g["pre_start"],
+                         e0_grid + g["pre_end"]),
+            "XANES":    (e0_grid + g["pre_end"],
+                         e0_grid + g["xanes_end"]),
+            "EXAFS":    (e0_grid + g["xanes_end"],
                          e_ex1),
         }
 
