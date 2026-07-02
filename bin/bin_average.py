@@ -16,38 +16,22 @@ Features
 
 import argparse
 import json
-import re
 from pathlib import Path
 from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
-from scipy.signal import savgol_filter
 from scipy.ndimage import median_filter
 import matplotlib.pyplot as plt
 
-def _ensure_parent(path: str | Path | None):
-    """Ensure parent directory of path exists (if it's a real file path)."""
-    if not path or "/" not in str(path) and "\\" not in str(path):
-        return  # no directory component; assume current dir is fine
-    p = Path(str(path))
-    if p.parent and str(p.parent) != ".":
-        p.parent.mkdir(parents=True, exist_ok=True)
-
-
-# Optional YAML support
-try:
-    import yaml
-    HAS_YAML = True
-except ImportError:
-    HAS_YAML = False
-
-
-# -------------------------
-# Constants / conversions
-# -------------------------
-HC_EV_ANG = 12398.419843320025  # eV*Å
-K_CONV_EV_PER_A2 = 3.8099819442818976  # E-E0 = K_CONV * k^2
+from xas_utils import (
+    HC_EV_ANG, K_CONV_EV_PER_A2,
+    deep_update, load_config,
+    _ensure_parent,
+    parse_spring8_file as _parse_spring8_file,
+    estimate_e0,
+    align_scan_energy,
+)
 
 
 @dataclass
@@ -107,36 +91,11 @@ DEFAULTS = {
 # -------------------------
 # Config helpers
 # -------------------------
-def deep_update(base: dict, upd: dict):
-    for k, v in upd.items():
-        if isinstance(v, dict) and isinstance(base.get(k), dict):
-            deep_update(base[k], v)
-        else:
-            base[k] = v
-    return base
-
-
-def load_config(config_path: Path):
-    if config_path is None:
-        return {}
-    suffix = config_path.suffix.lower()
-    txt = config_path.read_text()
-
-    if suffix == ".json":
-        return json.loads(txt)
-    elif suffix in [".yaml", ".yml"]:
-        if not HAS_YAML:
-            raise RuntimeError("PyYAML not installed. Install with: pip install pyyaml")
-        return yaml.safe_load(txt)
-    else:
-        raise ValueError(f"Unsupported config extension: {suffix}. Use .json/.yaml/.yml")
-
-
 def build_settings(args):
     settings = json.loads(json.dumps(DEFAULTS))  # deep copy via JSON-serializable dict
     cfg = load_config(Path(args.config)) if args.config else {}
     if cfg:
-        deep_update(settings, cfg)
+        settings = deep_update(settings, cfg)
 
     # CLI overrides config
     if args.mode:
@@ -180,124 +139,27 @@ def build_settings(args):
 # -------------------------
 def parse_spring8_file(filepath: Path, mode: str, angle_col="Angle(o)", time_col="time/s",
                        i0_col="2", i1_col="3", fluo_cols=None) -> Scan:
-    text = filepath.read_text(errors="ignore").splitlines()
-
-    d_spacing = np.nan
-    for line in text[:120]:
-        m = re.search(r"D=\s*([0-9.]+)\s*A", line)
-        if m:
-            d_spacing = float(m.group(1))
-            break
-    if np.isnan(d_spacing):
-        raise ValueError(f"Could not find D=...A in header: {filepath}")
-
-    header_idx = None
-    col_names = None
-    for i, line in enumerate(text):
-        if "Angle(o)" in line and "time/s" in line:
-            header_idx = i
-            col_names = line.split()
-            break
-    if header_idx is None:
-        raise ValueError(f"Could not find data header with Angle(o), time/s in {filepath}")
-
-    data_lines = []
-    for line in text[header_idx + 1:]:
-        toks = line.split()
-        if len(toks) < len(col_names):
-            continue
-        ok = True
-        for t in toks[:len(col_names)]:
-            try:
-                float(t)
-            except Exception:
-                ok = False
-                break
-        if ok:
-            data_lines.append(toks[:len(col_names)])
-
-    if not data_lines:
-        raise ValueError(f"No numeric rows found in {filepath}")
-
-    arr = np.array(data_lines, dtype=float)
-    df = pd.DataFrame(arr, columns=col_names)
-
-    for req in [angle_col, time_col, i0_col]:
-        if req not in df.columns:
-            raise ValueError(f"{req} not in columns for {filepath}: {list(df.columns)}")
-
-    theta_deg = df[angle_col].to_numpy()
-    time_s = df[time_col].to_numpy()
-    i0 = df[i0_col].to_numpy()
-
-    eps = 1e-12
-    if mode == "transmission":
-        if i1_col not in df.columns:
-            raise ValueError(f"{i1_col} not found in {filepath}")
-        i1 = df[i1_col].to_numpy()
-        signal = i1
-        mu = np.log((i0 + eps) / (i1 + eps))
-    else:
-        if not fluo_cols:
-            reserved = {angle_col, "Angle(c)", time_col, i0_col}
-            fluo_cols = [c for c in df.columns if c not in reserved]
-        for c in fluo_cols:
-            if c not in df.columns:
-                raise ValueError(f"Fluo column {c} missing in {filepath}")
-        fluo = df[fluo_cols].sum(axis=1).to_numpy()
-        signal = fluo
-        mu = fluo / (i0 + eps)
-
-    theta_rad = np.deg2rad(theta_deg)
-    energy = HC_EV_ANG / (2.0 * d_spacing * np.sin(theta_rad))
-
-    order = np.argsort(energy)
+    """Parse an SPring-8-style file and return a Scan dataclass."""
+    raw = _parse_spring8_file(
+        filepath, mode=mode, angle_col=angle_col, time_col=time_col,
+        i0_col=i0_col, i1_col=i1_col, fluo_cols=fluo_cols,
+    )
     return Scan(
-        path=filepath,
-        d_spacing=d_spacing,
-        theta_deg=theta_deg[order],
-        energy_eV=energy[order],
-        time_s=time_s[order],
-        i0=i0[order],
-        signal=signal[order],
-        mode=mode,
-        mu=mu[order],
+        path=raw["path"],
+        d_spacing=raw["d_spacing"],
+        theta_deg=raw["theta_deg"],
+        energy_eV=raw["energy_eV"],
+        time_s=raw["time_s"],
+        i0=raw["i0"],
+        signal=raw["signal"],
+        mode=raw["mode"],
+        mu=raw["mu"],
     )
 
 
 # -------------------------
 # QC + E0
 # -------------------------
-def estimate_e0(energy, mu, window=31, poly=3, exclude=(0.05, 0.05)):
-    """Estimate E0 as energy at maximum d(mu)/dE, excluding scan edges."""
-    n = len(mu)
-    if n < 10:
-        dmu = np.gradient(mu, energy)
-        return energy[np.argmax(dmu)]
-
-    lo_frac, hi_frac = exclude
-    lo = int(n * lo_frac)
-    hi = int(n * (1.0 - hi_frac))
-
-    w = min(window, n - 2)
-    if w < 7:
-        w = 7
-    if w % 2 == 0:
-        w += 1
-    if w >= n:
-        w = n - (n % 2)
-    if w < 5:
-        dmu = np.gradient(mu, energy)
-        idx = np.argmax(dmu[lo:hi]) + lo
-        return energy[idx]
-
-    mu_s = savgol_filter(mu, int(w), poly, mode="interp")
-    dmu = np.gradient(mu_s, energy)
-
-    idx = np.argmax(dmu[lo:hi]) + lo
-    return energy[idx]
-
-
 def qc_scans(scans, shutter_threshold_frac, min_range_frac, median_i0_z):
     ranges = np.array([s.energy_eV.max() - s.energy_eV.min() for s in scans])
     med_range = np.median(ranges)
@@ -630,13 +492,6 @@ def plot_average(E, MU, SIG, all_mu=None, save_prefix=None, regions=None, coarse
         _ensure_parent(out_path)
         fig.savefig(out_path)
     return fig
-
-
-def align_scan_energy(scan, e0_target):
-    """Shift energy axis so scan.e0 matches e0_target."""
-    delta = e0_target - scan.e0
-    scan.energy_eV = scan.energy_eV + delta
-    scan.e0 = e0_target
 
 
 # -------------------------

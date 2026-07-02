@@ -40,35 +40,12 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-
-# Lazy-loaded YAML callables
-safe_load = None   # type: ignore
-safe_dump = None   # type: ignore
-
-
-def _ensure_yaml() -> None:
-    """Lazy-load PyYAML safe functions; exit with a helpful message if missing."""
-    global safe_load, safe_dump
-    if safe_load is not None and safe_dump is not None:
-        return
-    try:
-        from yaml import safe_load as sl, safe_dump as sd
-        safe_load = sl
-        safe_dump = sd
-    except ImportError:
-        print("Error: PyYAML is required. Install with: pip install pyyaml", file=sys.stderr)
-        sys.exit(1)
-
-
-def deep_update(base: dict, override: dict) -> dict:
-    """Return deep-merged dict(base <- override) without mutating input."""
-    out = dict(base)
-    for k, v in override.items():
-        if k in out and isinstance(out[k], dict) and isinstance(v, dict):
-            out[k] = deep_update(out[k], v)
-        else:
-            out[k] = v
-    return out
+import xas_utils
+from xas_utils import (
+    _ensure_yaml,
+    deep_update,
+    _validate_files_list, _apply_prefix_suffix,
+)
 
 
 def merge_config(config_path: str | None, overrides: dict) -> tuple[Path | None, bool]:
@@ -91,7 +68,7 @@ def merge_config(config_path: str | None, overrides: dict) -> tuple[Path | None,
         if not p.exists():
             raise FileNotFoundError(f"Config file not found: {config_path}")
         with p.open("r", encoding="utf-8") as f:
-            base = safe_load(f) or {}
+            base = xas_utils.safe_load(f) or {}
         if not isinstance(base, dict):
             raise ValueError(f"Config file must contain a mapping at top level: {config_path}")
 
@@ -99,7 +76,7 @@ def merge_config(config_path: str | None, overrides: dict) -> tuple[Path | None,
 
     tmp = tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False, encoding="utf-8")
     try:
-        safe_dump(merged, tmp, default_flow_style=False, sort_keys=False)
+        xas_utils.safe_dump(merged, tmp, default_flow_style=False, sort_keys=False)
     finally:
         tmp.close()
 
@@ -113,39 +90,13 @@ BIN_AVERAGE = SCRIPT_DIR / "bin_average.py"
 _JOB_META = {"name", "files", "dir", "config", "file-prefix", "file-suffix", "output", "output-dir"}
 
 
-def _validate_files_list(files: Any, where: str) -> list[str]:
-    """Validate and normalize a files list."""
-    if not isinstance(files, list) or len(files) == 0:
-        raise ValueError(f"{where}: 'files' must be a non-empty list")
-    out: list[str] = []
-    for i, x in enumerate(files):
-        if not isinstance(x, str) or not x.strip():
-            raise ValueError(f"{where}: files[{i}] must be a non-empty string")
-        out.append(x.strip())
-    return out
-
-
-def _apply_prefix_suffix(tokens: list[str], prefix: str, suffix: str, where: str) -> list[str]:
-    """Apply file prefix/suffix transformation with light sanity warnings."""
-    out = []
-    for t in tokens:
-        if suffix and t.endswith(suffix):
-            print(
-                f"Warning: {where}: token '{t}' already ends with suffix '{suffix}'. "
-                "Result may duplicate suffix.",
-                file=sys.stderr,
-            )
-        out.append(f"{prefix}{t}{suffix}")
-    return out
-
-
 def load_batch(filepath: str) -> list[dict]:
     """Load one YAML batch spec and return normalized job dicts."""
     _ensure_yaml()
     p = Path(filepath)
 
     with p.open("r", encoding="utf-8") as f:
-        data = safe_load(f)
+        data = xas_utils.safe_load(f)
 
     if data is None:
         raise ValueError(f"{filepath}: empty file")
