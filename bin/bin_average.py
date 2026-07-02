@@ -396,17 +396,36 @@ def coarsen_edges_to_min_step(
 # Binning
 # -------------------------
 def bin_scan_to_edges(energy, mu, edges):
+    """Bin raw (E, μ) data onto a shared edge grid.
+
+    Returns
+    -------
+    b_e : 1D array of mean energy per bin.
+    b_mu : 1D array of mean μ per bin.
+    b_sigma : 1D array of standard error of the mean per bin (NaN for empty bins,
+              inf for single-point bins).
+    """
     idx = np.digitize(energy, edges) - 1
     nb = len(edges) - 1
     b_mu = np.full(nb, np.nan)
     b_e = np.full(nb, np.nan)
+    b_sigma = np.full(nb, np.nan)
 
     for i in range(nb):
         m = idx == i
-        if np.any(m):
-            b_mu[i] = np.mean(mu[m])
-            b_e[i] = np.mean(energy[m])
-    return b_e, b_mu
+        if not np.any(m):
+            continue
+        n_pts = int(np.sum(m))
+        b_mu[i] = np.mean(mu[m])
+        b_e[i] = np.mean(energy[m])
+        if n_pts >= 2:
+            b_sigma[i] = np.std(mu[m], ddof=1) / np.sqrt(n_pts)
+        else:
+            # Single-point bin — no internal scatter estimate; averaging
+            # logic will handle it via fallback weighting.
+            b_sigma[i] = np.inf
+
+    return b_e, b_mu, b_sigma
 
 
 def smooth_sigma(sig, win=11):
@@ -427,20 +446,67 @@ def smooth_sigma(sig, win=11):
 def average_binned(scans, edges, smooth_unc=True):
     all_e = []
     all_mu = []
+    all_sigma = []
     for s in scans:
-        be, bm = bin_scan_to_edges(s.energy_eV, s.mu, edges)
+        be, bm, bs = bin_scan_to_edges(s.energy_eV, s.mu, edges)
         all_e.append(be)
         all_mu.append(bm)
+        all_sigma.append(bs)
 
     all_e = np.array(all_e)
     all_mu = np.array(all_mu)
+    all_sigma = np.array(all_sigma)
 
-    mean_e = np.nanmean(all_e, axis=0)
-    mean_mu = np.nanmean(all_mu, axis=0)
+    nb = all_mu.shape[1]
+    mean_e = np.full(nb, np.nan)
+    mean_mu = np.full(nb, np.nan)
+    sigma_mean = np.full(nb, np.nan)
     n_eff = np.sum(np.isfinite(all_mu), axis=0)
 
-    std = np.nanstd(all_mu, axis=0, ddof=1)
-    sigma_mean = std / np.sqrt(np.maximum(n_eff, 1))
+    has_sigma = np.isfinite(all_sigma)  # (n_scans, nbins)
+    warned_partial = False
+
+    for j in range(nb):
+        valid = np.isfinite(all_mu[:, j])
+        nv = int(np.sum(valid))
+        if nv < 2:
+            continue
+
+        mu_v = all_mu[valid, j]
+        e_v = all_e[valid, j]
+        sig_v = all_sigma[valid, j]
+        has_s = has_sigma[valid, j]
+
+        n_has_sig = int(np.sum(has_s))
+
+        if n_has_sig == 0:
+            # No uncertainty estimates — equal-weight fallback.
+            mean_e[j] = np.mean(e_v)
+            mean_mu[j] = np.mean(mu_v)
+            sigma_mean[j] = np.std(mu_v, ddof=1) / np.sqrt(nv)
+
+        elif n_has_sig < nv:
+            # Partial: assign missing σ to the worst (largest) known σ.
+            if not warned_partial:
+                print("NOTE: Some bins had scans without per-bin uncertainty "
+                      "(single-point bins). These were assigned the largest "
+                      "known σ in that bin as a conservative fallback.")
+                warned_partial = True
+
+            max_sig = np.max(np.where(has_s, sig_v, 0.0))
+            # Build weights: known σ → inverse-variance; unknown → 1/max_sig²
+            w_known = np.where(has_s, 1.0 / sig_v**2, 1.0 / max_sig**2)
+        else:
+            # All have uncertainty — standard inverse-variance weighting.
+            with np.errstate(divide="ignore", invalid="ignore"):
+                w_known = 1.0 / sig_v**2
+
+        if n_has_sig > 0:
+            w_sum_j = np.sum(w_known)
+            mean_e[j] = np.sum(w_known * e_v) / w_sum_j
+            mean_mu[j] = np.sum(w_known * mu_v) / w_sum_j
+            sigma_mean[j] = 1.0 / np.sqrt(w_sum_j)
+
     if smooth_unc:
         sigma_mean = smooth_sigma(sigma_mean, win=11)
 
